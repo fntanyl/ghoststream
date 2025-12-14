@@ -417,8 +417,9 @@ def main() -> int:
         upload_file_r2(r2, r2_bucket, thumb_key, out_jpg, "image/jpeg", args.dry_run)
 
         # Insert into Supabase
-        supabase_url = require_env("SUPABASE_URL")
-        supabase_key = require_env("SUPABASE_SERVICE_ROLE_KEY")
+        # Accept both SUPABASE_URL and URL (Supabase dashboard doesn't allow SUPABASE_ prefix)
+        supabase_url = os.getenv("SUPABASE_URL") or require_env("URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or require_env("SERVICE_ROLE_KEY")
         sb = create_client(supabase_url, supabase_key)
 
         video_row = {
