@@ -1,0 +1,13 @@
+# GhostStream admin ingestion requirements (run locally, never in the browser)
+#
+# NOTE: This script uses your Supabase Service Role key and R2 credentials.
+# Keep your `.env` private and NEVER commit it.
+
+boto3==1.35.66
+cryptography==43.0.3
+python-dotenv==1.0.1
+supabase==2.10.0
+requests==2.32.3
+rich==13.9.4
+
+
