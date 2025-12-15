@@ -45,8 +45,17 @@ function useTelegramBackButton() {
 }
 
 export function App() {
-  useTelegramBackButton();
+  console.log("[GhostStream] 🏠 App component rendering...");
+  
+  try {
+    useTelegramBackButton();
+    console.log("[GhostStream] ✅ useTelegramBackButton OK");
+  } catch (e) {
+    console.error("[GhostStream] ❌ useTelegramBackButton error:", e);
+  }
 
+  console.log("[GhostStream] 🎨 Rendering AppRoot...");
+  
   // Use Telegram UI primitives to ensure Telegram-native look.
   return (
     <AppRoot>
