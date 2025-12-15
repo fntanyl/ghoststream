@@ -3,7 +3,7 @@ import "./styles.css";
 
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { HashRouter } from "react-router-dom";
+import { MemoryRouter } from "react-router-dom";
 
 import { init } from "@telegram-apps/sdk";
 
@@ -27,12 +27,16 @@ try {
 
 console.log("[GhostStream] 📦 Mounting React app...");
 
+// IMPORTANT: Use MemoryRouter instead of HashRouter!
+// Telegram Mini Apps use the URL hash for initData (tgWebAppData=...),
+// which conflicts with HashRouter's hash-based routing.
+// MemoryRouter keeps routing state in memory - perfect for embedded WebViews.
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <HashRouter>
+      <MemoryRouter initialEntries={["/"]}>
         <App />
-      </HashRouter>
+      </MemoryRouter>
     </ErrorBoundary>
   </React.StrictMode>,
 );
