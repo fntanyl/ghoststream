@@ -35,8 +35,8 @@ export function PlayerPage({ haptics }: Props) {
 
   const videoEl = useRef<HTMLVideoElement | null>(null);
   const refreshTimer = useRef<number | null>(null);
-
-  const expiresAt = useMemo(() => data?.videoUrlExpiresAt ?? null, [data]);
+  const isFetching = useRef<boolean>(false); // Prevent concurrent fetches
+  const lastErrorTime = useRef<number>(0); // Debounce video errors
 
   const clearRefreshTimer = useCallback(() => {
     if (refreshTimer.current != null) {
@@ -47,13 +47,22 @@ export function PlayerPage({ haptics }: Props) {
 
   const fetchAndSet = useCallback(
     async (opts?: { keepPlaybackTime?: boolean; autoplay?: boolean }) => {
+      // Prevent concurrent fetches (fixes infinite loop)
+      if (isFetching.current) {
+        console.log("[GhostStream] ⏳ Fetch already in progress, skipping...");
+        return;
+      }
+
       if (!videoId) {
         setError("Missing video id");
         setLoading(false);
         return;
       }
 
+      isFetching.current = true;
       setError(null);
+      console.log("[GhostStream] 🎥 Fetching video URL...");
+
       try {
         const keepT = opts?.keepPlaybackTime ?? true;
         const autoplay = opts?.autoplay ?? false;
@@ -63,6 +72,7 @@ export function PlayerPage({ haptics }: Props) {
         const res = await getVideoUrl(videoId);
         if (!res.ok) throw new Error(res.error.message);
 
+        console.log("[GhostStream] ✅ Video URL received");
         setData(res.video);
         setRefreshSkewSeconds(res.refreshSkewSeconds);
 
@@ -86,14 +96,20 @@ export function PlayerPage({ haptics }: Props) {
       } catch (e) {
         const msg =
           e instanceof HttpError ? e.message : e instanceof Error ? e.message : "Unknown error";
+        console.error("[GhostStream] ❌ Video URL error:", msg);
         setError(msg);
         setData(null);
       } finally {
         setLoading(false);
+        isFetching.current = false;
       }
     },
     [videoId],
   );
+
+  // Store fetchAndSet in a ref to avoid dependency issues in useEffect
+  const fetchAndSetRef = useRef(fetchAndSet);
+  fetchAndSetRef.current = fetchAndSet;
 
   const scheduleRefresh = useCallback(() => {
     clearRefreshTimer();
@@ -104,25 +120,31 @@ export function PlayerPage({ haptics }: Props) {
       refreshSkewSeconds,
     });
 
+    console.log("[GhostStream] ⏰ Scheduling URL refresh in", Math.round(delayMs / 1000), "seconds");
+
     refreshTimer.current = window.setTimeout(() => {
       // Refresh URL in background; keep current playback time.
-      void fetchAndSet({ keepPlaybackTime: true, autoplay: true });
+      void fetchAndSetRef.current({ keepPlaybackTime: true, autoplay: true });
     }, delayMs);
-  }, [clearRefreshTimer, data, fetchAndSet, refreshSkewSeconds]);
+  }, [clearRefreshTimer, data, refreshSkewSeconds]);
 
-  // Initial load
+  // Initial load - runs ONCE on mount (videoId is stable)
   useEffect(() => {
+    console.log("[GhostStream] 🚀 PlayerPage mounted, loading video...");
     setLoading(true);
-    void fetchAndSet({ keepPlaybackTime: false, autoplay: true });
+    void fetchAndSetRef.current({ keepPlaybackTime: false, autoplay: true });
     return () => {
       clearRefreshTimer();
     };
-  }, [clearRefreshTimer, fetchAndSet]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoId]); // Only re-run if videoId changes
 
-  // Refresh scheduling when expiresAt changes
+  // Refresh scheduling when data changes
   useEffect(() => {
-    scheduleRefresh();
-  }, [expiresAt, scheduleRefresh]);
+    if (data) {
+      scheduleRefresh();
+    }
+  }, [data, scheduleRefresh]);
 
   // When returning from background: if we're near expiry, refresh immediately.
   useEffect(() => {
@@ -134,12 +156,25 @@ export function PlayerPage({ haptics }: Props) {
         refreshSkewSeconds,
       });
       if (ms <= 1000) {
-        void fetchAndSet({ keepPlaybackTime: true, autoplay: true });
+        void fetchAndSetRef.current({ keepPlaybackTime: true, autoplay: true });
       }
     }
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, [data, fetchAndSet, refreshSkewSeconds]);
+  }, [data, refreshSkewSeconds]);
+
+  // Debounced video error handler
+  const handleVideoError = useCallback(() => {
+    const now = Date.now();
+    // Prevent rapid-fire error handling (min 5 seconds between retries)
+    if (now - lastErrorTime.current < 5000) {
+      console.log("[GhostStream] ⏳ Video error debounced");
+      return;
+    }
+    lastErrorTime.current = now;
+    console.log("[GhostStream] 🔄 Video error, refreshing URL...");
+    void fetchAndSetRef.current({ keepPlaybackTime: true, autoplay: true });
+  }, []);
 
   if (loading) {
     return (
@@ -199,10 +234,7 @@ export function PlayerPage({ haptics }: Props) {
         onPlay={() => {
           if (haptics.selectionChanged.isAvailable()) haptics.selectionChanged();
         }}
-        onError={() => {
-          // If playback fails (expired URL or network), force refresh.
-          void fetchAndSet({ keepPlaybackTime: true, autoplay: true });
-        }}
+        onError={handleVideoError}
       />
 
       <div className="gs-page">
