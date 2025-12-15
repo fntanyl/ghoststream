@@ -28,6 +28,7 @@ function formatDuration(seconds: number): string {
 }
 
 export function FeedPage({ haptics }: Props) {
+  console.log("[GhostStream] 🎬 FeedPage rendering...");
   const nav = useNavigate();
   const [tag, setTag] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(true);
@@ -41,6 +42,7 @@ export function FeedPage({ haptics }: Props) {
   const normalizedTag = useMemo(() => tag.trim().toLowerCase(), [tag]);
 
   const loadFirstPage = useCallback(async () => {
+    console.log("[GhostStream] 📡 Loading feed...");
     setLoading(true);
     setError(null);
     try {
@@ -48,12 +50,15 @@ export function FeedPage({ haptics }: Props) {
         limit: 20,
         ...(normalizedTag ? { tag: normalizedTag } : {}),
       });
+      console.log("[GhostStream] 📦 Feed response:", res);
       if (!res.ok) throw new Error(res.error.message);
       setItems(res.items);
       setNextCursor(res.nextCursor);
+      console.log("[GhostStream] ✅ Feed loaded, items:", res.items.length);
     } catch (e) {
       const msg =
         e instanceof HttpError ? e.message : e instanceof Error ? e.message : "Unknown error";
+      console.error("[GhostStream] ❌ Feed error:", msg, e);
       setError(msg);
       setItems([]);
       setNextCursor(null);
