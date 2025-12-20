@@ -15,6 +15,8 @@ type Haptics = {
 import { getFeed } from "../lib/api";
 import type { FeedItem } from "../lib/types";
 import { HttpError } from "../lib/http";
+import { useAdsgram } from "../lib/useAdsgram";
+import { shouldShowAd } from "../lib/adManager";
 
 type Props = {
   haptics: Haptics;
@@ -27,6 +29,9 @@ function formatDuration(seconds: number): string {
   return `${m}:${String(r).padStart(2, "0")}`;
 }
 
+// Adsgram Block ID - Replace with your actual block ID from partner.adsgram.ai
+const ADSGRAM_BLOCK_ID = "int-19609";
+
 export function FeedPage({ haptics }: Props) {
   console.log("[GhostStream] 🎬 FeedPage rendering...");
   const nav = useNavigate();
@@ -38,6 +43,21 @@ export function FeedPage({ haptics }: Props) {
   const [nextCursor, setNextCursor] = useState<{ cursorCreatedAt: string; cursorId: string } | null>(
     null,
   );
+  
+  // State for pending video navigation after ad
+  const [pendingVideoId, setPendingVideoId] = useState<string | null>(null);
+
+  // Initialize Adsgram with interstitial ad format
+  const showAd = useAdsgram({
+    blockId: ADSGRAM_BLOCK_ID,
+    onComplete: () => {
+      console.log("[GhostStream] 📺 Ad completed successfully");
+    },
+    onError: (result) => {
+      // Log error but don't block user - video will play anyway
+      console.log("[GhostStream] 📺 Ad error/unavailable:", result.description);
+    },
+  });
 
   const normalizedTag = useMemo(() => tag.trim().toLowerCase(), [tag]);
 
@@ -94,12 +114,51 @@ export function FeedPage({ haptics }: Props) {
     void loadFirstPage();
   }, [loadFirstPage]);
 
-  const onOpen = useCallback(
+  /**
+   * Navigate to video player after ad logic is handled
+   */
+  const navigateToVideo = useCallback(
     (id: string) => {
-      if (haptics.impactOccurred.isAvailable()) haptics.impactOccurred("medium");
       nav(`/video/${id}`);
     },
-    [haptics, nav],
+    [nav],
+  );
+
+  /**
+   * Handle video click with ad frequency logic
+   * 
+   * Business Logic:
+   * 1. Increment click counter
+   * 2. Every 3rd click: Show interstitial ad first, then navigate
+   * 3. Other clicks: Navigate immediately
+   * 4. If ad fails: Navigate anyway (never block user)
+   */
+  const onOpen = useCallback(
+    async (id: string) => {
+      if (haptics.impactOccurred.isAvailable()) haptics.impactOccurred("medium");
+
+      // Check if we should show an ad (every 3rd video click)
+      if (shouldShowAd()) {
+        console.log("[GhostStream] 📺 Showing interstitial ad before video...");
+        setPendingVideoId(id);
+        
+        try {
+          // Show ad - whether it succeeds or fails, we navigate after
+          await showAd();
+        } catch {
+          // Ad failed - continue to video anyway
+          console.log("[GhostStream] 📺 Ad failed, continuing to video");
+        } finally {
+          // Always navigate to video after ad attempt
+          setPendingVideoId(null);
+          navigateToVideo(id);
+        }
+      } else {
+        // No ad needed - navigate immediately
+        navigateToVideo(id);
+      }
+    },
+    [haptics, showAd, navigateToVideo],
   );
 
   return (
@@ -128,6 +187,23 @@ export function FeedPage({ haptics }: Props) {
           Filter
         </Button>
       </div>
+
+      {/* Loading overlay while ad is playing */}
+      {pendingVideoId && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+        >
+          <Spinner size="l" />
+        </div>
+      )}
 
       {loading ? (
         <div style={{ display: "flex", justifyContent: "center", padding: 24 }}>
