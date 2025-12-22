@@ -239,21 +239,6 @@ export function PlayerPage({ haptics }: Props) {
 
       <div className="gs-page">
         <div style={{ fontWeight: 600, marginBottom: 6 }}>{data.title}</div>
-        <div className="gs-small">
-          URL expires at: {new Date(data.videoUrlExpiresAt).toLocaleString()}
-        </div>
-
-        <div style={{ marginTop: 12 }}>
-          <Button
-            stretched
-            onClick={() => {
-              if (haptics.selectionChanged.isAvailable()) haptics.selectionChanged();
-              void fetchAndSet({ keepPlaybackTime: true, autoplay: true });
-            }}
-          >
-            Refresh link now
-          </Button>
-        </div>
       </div>
     </div>
   );

@@ -15,6 +15,10 @@ Responsibilities:
 - Upload MP4 + thumbnail to private Cloudflare R2
 - Insert records into Supabase Postgres
 
+Features:
+- Apple Silicon hardware acceleration (h264_videotoolbox) on macOS
+- Callable API for bulk uploads via ingest_video()
+
 Usage:
   python ingest.py --file video.mp4 --title "Titolo" --tags "tag1,tag2"
   python ingest.py --file video.mp4 --title "Titolo" --tags "tag1" --skip-compress
@@ -197,6 +201,38 @@ def ensure_ffmpeg() -> None:
         raise RuntimeError("ffmpeg not found. Please install FFmpeg (ffmpeg + ffprobe).")
 
 
+def is_apple_silicon() -> bool:
+    """Check if running on macOS with Apple Silicon (M1/M2/M3)."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        import platform
+        # Check if we're on ARM architecture (Apple Silicon)
+        return platform.machine() == "arm64"
+    except Exception:
+        return False
+
+
+def get_encoder_settings(use_hardware: bool = True) -> list[str]:
+    """
+    Return ffmpeg encoder settings.
+    Uses h264_videotoolbox on Apple Silicon for 5-10x faster encoding.
+    Falls back to libx264 on other platforms.
+    """
+    if use_hardware and is_apple_silicon():
+        return [
+            "-c:v", "h264_videotoolbox",
+            "-b:v", "2500k",       # Target bitrate (good for 720p mobile)
+            "-allow_sw", "1",     # Fallback to software if HW fails
+        ]
+    else:
+        return [
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "23",
+        ]
+
+
 def render_plan_table(inp: ProbeInfo, cap: int, will_reencode: bool, skip_compress: bool) -> None:
     t = Table(title="GhostStream Ingestion Plan")
     t.add_column("Field")
@@ -268,6 +304,205 @@ def upload_file_r2(
     )
 
 
+@dataclass
+class IngestResult:
+    """Result of a video ingestion operation."""
+    success: bool
+    video_id: Optional[str] = None
+    error: Optional[str] = None
+    video_key: Optional[str] = None
+    thumb_key: Optional[str] = None
+
+
+def ingest_video(
+    file_path: str,
+    title: str,
+    tags: str,
+    skip_compress: bool = False,
+    dry_run: bool = False,
+    video_prefix: str = "videos",
+    thumb_prefix: str = "thumbs",
+    progress_callback: Optional[callable] = None,
+) -> IngestResult:
+    """
+    Ingest a single video file programmatically.
+    
+    Args:
+        file_path: Path to the video file
+        title: Video title (will be encrypted)
+        tags: Comma-separated tags
+        skip_compress: Skip re-encoding if already compliant
+        dry_run: Don't actually upload or write to DB
+        video_prefix: R2 prefix for video objects
+        thumb_prefix: R2 prefix for thumbnail objects
+        progress_callback: Optional callback(stage: str, percent: int) for progress updates
+    
+    Returns:
+        IngestResult with success status and details
+    """
+    load_dotenv()
+    
+    def report(stage: str, percent: int = 0):
+        if progress_callback:
+            try:
+                progress_callback(stage, percent)
+            except Exception:
+                pass
+    
+    try:
+        src = Path(file_path).expanduser().resolve()
+        if not src.exists():
+            return IngestResult(success=False, error=f"File not found: {src}")
+        
+        ensure_ffmpeg()
+        report("Analisi video...", 5)
+        
+        inp = ffprobe(src)
+        cap = choose_cap(inp.duration_seconds)
+        
+        input_is_compliant = (
+            is_mp4_container(inp.container)
+            and inp.video_codec == "h264"
+            and (inp.audio_codec in ("aac", None))
+        )
+        will_reencode = (not skip_compress) or (not input_is_compliant)
+        
+        # Create processed outputs in a temp dir
+        with tempfile.TemporaryDirectory(prefix="ghoststream_ingest_") as td:
+            work = Path(td)
+            out_mp4 = work / "out.mp4"
+            out_jpg = work / "thumb.jpg"
+            
+            report("Compressione video..." if will_reencode else "Ottimizzazione...", 10)
+            
+            if skip_compress and input_is_compliant:
+                run([
+                    "ffmpeg", "-y", "-i", str(src),
+                    "-c", "copy", "-movflags", "+faststart",
+                    str(out_mp4),
+                ])
+            else:
+                vf = make_scale_filter(cap) if inp.height > cap else None
+                cmd = ["ffmpeg", "-y", "-i", str(src)]
+                cmd += get_encoder_settings(use_hardware=True)
+                cmd += ["-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+                if vf:
+                    cmd += ["-vf", vf]
+                if inp.audio_codec is None:
+                    cmd += ["-an"]
+                else:
+                    cmd += ["-c:a", "aac", "-b:a", "128k"]
+                cmd += [str(out_mp4)]
+                run(cmd)
+            
+            report("Verifica output...", 50)
+            out_info = ffprobe(out_mp4)
+            
+            # NO-UPSCALE invariant
+            if out_info.height > inp.height:
+                return IngestResult(success=False, error=f"NO-UPSCALE violated: output height {out_info.height} > input {inp.height}")
+            if out_info.width > inp.width:
+                return IngestResult(success=False, error=f"NO-UPSCALE violated: output width {out_info.width} > input {inp.width}")
+            
+            # Enforce playable codecs
+            if out_info.video_codec != "h264":
+                return IngestResult(success=False, error=f"Output video codec not H.264: {out_info.video_codec}")
+            if out_info.audio_codec not in ("aac", None):
+                return IngestResult(success=False, error=f"Output audio codec not AAC: {out_info.audio_codec}")
+            if not is_mp4_container(out_info.container):
+                return IngestResult(success=False, error=f"Output container not MP4/MOV: {out_info.container}")
+            
+            report("Generazione thumbnail...", 55)
+            
+            # Thumbnail
+            thumb_ts = min(max(0.5, out_info.duration_seconds * 0.1), 5.0)
+            thumb_vf = "scale=-2:360" if out_info.height > 360 else None
+            thumb_cmd = [
+                "ffmpeg", "-y", "-ss", f"{thumb_ts:.2f}",
+                "-i", str(out_mp4), "-vframes", "1", "-q:v", "4",
+            ]
+            if thumb_vf:
+                thumb_cmd += ["-vf", thumb_vf]
+            thumb_cmd += [str(out_jpg)]
+            run(thumb_cmd)
+            
+            report("Cifratura metadati...", 60)
+            
+            # Encrypt title + compute tag HMACs
+            aes_key_b64 = os.getenv("AES_KEY_B64") or require_env("GS_AES_KEY_B64")
+            tag_key_b64 = os.getenv("TAG_HMAC_KEY_B64") or require_env("GS_TAG_HMAC_KEY_B64")
+            
+            title_enc = encrypt_title_envelope_b64(title, aes_key_b64)
+            raw_tags = [t.strip() for t in tags.split(",")]
+            tag_tokens = [t for t in (normalize_tag(x) for x in raw_tags) if t]
+            if not tag_tokens:
+                return IngestResult(success=False, error="No valid tags provided after normalization.")
+            
+            tag_hmacs = [compute_tag_hmac_hex(t, tag_key_b64) for t in tag_tokens]
+            
+            # Prepare keys
+            obj_id = str(uuid.uuid4())
+            video_key = f"{video_prefix.rstrip('/')}/{obj_id}.mp4"
+            thumb_key = f"{thumb_prefix.rstrip('/')}/{obj_id}.jpg"
+            
+            if dry_run:
+                return IngestResult(
+                    success=True,
+                    video_id="dry-run",
+                    video_key=video_key,
+                    thumb_key=thumb_key,
+                )
+            
+            report("Upload video su R2...", 65)
+            
+            # Upload to R2
+            r2_bucket = require_env("R2_BUCKET")
+            r2 = build_r2_client()
+            upload_file_r2(r2, r2_bucket, video_key, out_mp4, "video/mp4", False)
+            
+            report("Upload thumbnail...", 85)
+            upload_file_r2(r2, r2_bucket, thumb_key, out_jpg, "image/jpeg", False)
+            
+            report("Salvataggio database...", 90)
+            
+            # Insert into Supabase
+            supabase_url = os.getenv("SUPABASE_URL") or require_env("URL")
+            supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or require_env("SERVICE_ROLE_KEY")
+            sb = create_client(supabase_url, supabase_key)
+            
+            video_row = {
+                "title_enc": title_enc,
+                "duration_seconds": int(round(out_info.duration_seconds)),
+                "width": out_info.width,
+                "height": out_info.height,
+                "r2_bucket": r2_bucket,
+                "r2_video_key": video_key,
+                "r2_thumb_key": thumb_key,
+                "published": True,
+            }
+            
+            inserted = sb.table("videos").insert(video_row).execute()
+            if not inserted.data or len(inserted.data) != 1:
+                return IngestResult(success=False, error=f"Unexpected insert response: {inserted}")
+            
+            video_id = inserted.data[0]["id"]
+            
+            tag_rows = [{"video_id": video_id, "tag_hmac": h} for h in tag_hmacs]
+            sb.table("video_tag_tokens").insert(tag_rows).execute()
+            
+            report("Completato!", 100)
+            
+            return IngestResult(
+                success=True,
+                video_id=video_id,
+                video_key=video_key,
+                thumb_key=thumb_key,
+            )
+    
+    except Exception as e:
+        return IngestResult(success=False, error=str(e))
+
+
 def main() -> int:
     load_dotenv()
 
@@ -326,21 +561,17 @@ def main() -> int:
             # - If input height <= cap, we DO NOT apply any scale filter (preserve original res).
             # - If input height  > cap, we downscale to cap.
             vf = make_scale_filter(cap) if inp.height > cap else None
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(src),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "23",
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
+            
+            # Build ffmpeg command with platform-optimized encoder
+            cmd = ["ffmpeg", "-y", "-i", str(src)]
+            
+            # Add encoder settings (Apple Silicon or CPU fallback)
+            cmd += get_encoder_settings(use_hardware=True)
+            
+            # Common settings
+            cmd += [
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
             ]
             if vf:
                 cmd += ["-vf", vf]

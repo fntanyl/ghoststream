@@ -1,4 +1,4 @@
-import { Button, Cell, Placeholder, Spinner } from "@telegram-apps/telegram-ui";
+import { Button, Placeholder, Spinner } from "@telegram-apps/telegram-ui";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -234,33 +234,27 @@ export function FeedPage({ haptics }: Props) {
         />
       ) : (
         <>
-          {items.map((it) => (
-            <Cell
-              key={it.id}
-              onClick={() => onOpen(it.id)}
-              before={
-                <img
-                  alt=""
-                  src={it.thumbUrl}
-                  style={{
-                    width: 72,
-                    height: 72,
-                    objectFit: "cover",
-                    borderRadius: 12,
-                    background: "rgba(0,0,0,0.08)",
-                  }}
-                />
-              }
-              subtitle={
-                <span className="gs-small">
-                  {formatDuration(it.durationSeconds)} ·{" "}
-                  {it.height ? `${it.height}p` : "MP4"} · {new Date(it.createdAt).toLocaleDateString()}
-                </span>
-              }
-            >
-              {it.title}
-            </Cell>
-          ))}
+          <div className="gs-feed">
+            {items.map((it) => (
+              <div
+                key={it.id}
+                className="gs-video-card"
+                onClick={() => onOpen(it.id)}
+              >
+                <div className="gs-video-thumb-container">
+                  <img
+                    alt=""
+                    src={it.thumbUrl}
+                    className="gs-video-thumb"
+                  />
+                  <span className="gs-video-duration">{formatDuration(it.durationSeconds)}</span>
+                </div>
+                <div className="gs-video-info">
+                  <div className="gs-video-title">{it.title}</div>
+                </div>
+              </div>
+            ))}
+          </div>
 
           <div style={{ paddingTop: 12 }}>
             {nextCursor ? (
