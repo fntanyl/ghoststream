@@ -1,4 +1,4 @@
-import { Button, Cell, Placeholder, Section, Spinner, Title } from "@telegram-apps/telegram-ui";
+import { Button, Placeholder, Spinner } from "@telegram-apps/telegram-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -299,18 +299,25 @@ export function PlayerPage({ haptics }: Props) {
         />
       </div>
 
-      <Section header={<Title level="3" weight="2">{data.title}</Title>}>
+      <div className="gs-video-meta">
+        <h2 className="gs-video-title-large">{data.title}</h2>
+      </div>
+
+      <div className="gs-suggested-section">
+        <h3 className="gs-suggested-header">More videos</h3>
         {loadingSuggested && suggestedVideos.length === 0 ? (
           <div style={{ display: "flex", justifyContent: "center", padding: 24 }}>
             <Spinner size="m" />
           </div>
         ) : suggestedVideos.length > 0 ? (
           <>
-            {suggestedVideos.map((video) => (
-              <Cell
-                key={video.id}
-                onClick={() => onSuggestedClick(video.id)}
-                before={
+            <div className="gs-suggested-list">
+              {suggestedVideos.map((video) => (
+                <div
+                  key={video.id}
+                  className="gs-suggested-card"
+                  onClick={() => onSuggestedClick(video.id)}
+                >
                   <div className="gs-suggested-thumb-container">
                     <img
                       alt=""
@@ -319,13 +326,14 @@ export function PlayerPage({ haptics }: Props) {
                     />
                     <span className="gs-video-duration">{formatDuration(video.durationSeconds)}</span>
                   </div>
-                }
-              >
-                {video.title}
-              </Cell>
-            ))}
+                  <div className="gs-suggested-info">
+                    <span className="gs-suggested-title">{video.title}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
             {suggestedCursor && (
-              <div style={{ padding: "12px 16px" }}>
+              <div style={{ marginTop: 16 }}>
                 <Button
                   stretched
                   mode="outline"
@@ -341,9 +349,9 @@ export function PlayerPage({ haptics }: Props) {
             )}
           </>
         ) : (
-          <Placeholder description="No other videos available" />
+          <div className="gs-suggested-empty">No other videos available</div>
         )}
-      </Section>
+      </div>
     </div>
   );
 }
