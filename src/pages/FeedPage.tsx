@@ -1,5 +1,5 @@
 import { Button, Placeholder, Spinner } from "@telegram-apps/telegram-ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 type Haptics = {
@@ -60,6 +60,21 @@ export function FeedPage({ haptics }: Props) {
   });
 
   const normalizedTag = useMemo(() => tag.trim().toLowerCase(), [tag]);
+  const [debouncedTag, setDebouncedTag] = useState(normalizedTag);
+  const isFirstMount = useRef(true);
+
+  // Debounce tag changes - wait 500ms after user stops typing
+  useEffect(() => {
+    // Skip debounce on first mount to load feed immediately
+    if (isFirstMount.current) {
+      isFirstMount.current = false;
+      return;
+    }
+    const timer = setTimeout(() => {
+      setDebouncedTag(normalizedTag);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [normalizedTag]);
 
   const loadFirstPage = useCallback(async () => {
     console.log("[GhostStream] 📡 Loading feed...");
@@ -68,7 +83,7 @@ export function FeedPage({ haptics }: Props) {
     try {
       const res = await getFeed({
         limit: 20,
-        ...(normalizedTag ? { tag: normalizedTag } : {}),
+        ...(debouncedTag ? { tag: debouncedTag } : {}),
       });
       console.log("[GhostStream] 📦 Feed response:", res);
       if (!res.ok) throw new Error(res.error.message);
@@ -85,7 +100,7 @@ export function FeedPage({ haptics }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [normalizedTag]);
+  }, [debouncedTag]);
 
   const loadMore = useCallback(async () => {
     if (!nextCursor || loadingMore) return;
@@ -94,7 +109,7 @@ export function FeedPage({ haptics }: Props) {
     try {
       const res = await getFeed({
         limit: 20,
-        ...(normalizedTag ? { tag: normalizedTag } : {}),
+        ...(debouncedTag ? { tag: debouncedTag } : {}),
         cursorCreatedAt: nextCursor.cursorCreatedAt,
         cursorId: nextCursor.cursorId,
       });
@@ -108,7 +123,7 @@ export function FeedPage({ haptics }: Props) {
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, nextCursor, normalizedTag]);
+  }, [loadingMore, nextCursor, debouncedTag]);
 
   useEffect(() => {
     void loadFirstPage();
@@ -173,7 +188,8 @@ export function FeedPage({ haptics }: Props) {
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               if (haptics.selectionChanged.isAvailable()) haptics.selectionChanged();
-              void loadFirstPage();
+              // Immediately update debounced tag and trigger search
+              setDebouncedTag(normalizedTag);
             }
           }}
         />
@@ -181,7 +197,8 @@ export function FeedPage({ haptics }: Props) {
           size="m"
           onClick={() => {
             if (haptics.selectionChanged.isAvailable()) haptics.selectionChanged();
-            void loadFirstPage();
+            // Immediately update debounced tag and trigger search
+            setDebouncedTag(normalizedTag);
           }}
         >
           Filter

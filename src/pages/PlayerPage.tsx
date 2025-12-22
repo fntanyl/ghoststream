@@ -1,5 +1,5 @@
-import { Button, Placeholder, Spinner } from "@telegram-apps/telegram-ui";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Button, Cell, Placeholder, Section, Spinner, Title } from "@telegram-apps/telegram-ui";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 type Haptics = {
@@ -12,10 +12,17 @@ type Haptics = {
   selectionChanged: (() => void) & { isAvailable: () => boolean };
 };
 
-import { getVideoUrl } from "../lib/api";
-import type { VideoUrlResponse } from "../lib/types";
+import { getFeed, getVideoUrl } from "../lib/api";
+import type { FeedItem, VideoUrlResponse } from "../lib/types";
 import { HttpError } from "../lib/http";
 import { msUntilRefresh } from "../lib/urlRefresh";
+
+function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${String(r).padStart(2, "0")}`;
+}
 
 type Props = {
   haptics: Haptics;
@@ -32,6 +39,9 @@ export function PlayerPage({ haptics }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<VideoState | null>(null);
   const [refreshSkewSeconds, setRefreshSkewSeconds] = useState<number>(10 * 60);
+  const [suggestedVideos, setSuggestedVideos] = useState<FeedItem[]>([]);
+  const [suggestedCursor, setSuggestedCursor] = useState<{ cursorCreatedAt: string; cursorId: string } | null>(null);
+  const [loadingSuggested, setLoadingSuggested] = useState(false);
 
   const videoEl = useRef<HTMLVideoElement | null>(null);
   const refreshTimer = useRef<number | null>(null);
@@ -176,6 +186,56 @@ export function PlayerPage({ haptics }: Props) {
     void fetchAndSetRef.current({ keepPlaybackTime: true, autoplay: true });
   }, []);
 
+  // Load suggested videos
+  useEffect(() => {
+    async function loadSuggested() {
+      setLoadingSuggested(true);
+      try {
+        const res = await getFeed({ limit: 6 });
+        if (res.ok) {
+          // Filter out the current video
+          const filtered = res.items.filter((item) => item.id !== videoId);
+          setSuggestedVideos(filtered);
+          setSuggestedCursor(res.nextCursor);
+        }
+      } catch {
+        // Silently fail - suggested videos are not critical
+      } finally {
+        setLoadingSuggested(false);
+      }
+    }
+    void loadSuggested();
+  }, [videoId]);
+
+  const loadMoreSuggested = useCallback(async () => {
+    if (!suggestedCursor || loadingSuggested) return;
+    setLoadingSuggested(true);
+    try {
+      const res = await getFeed({
+        limit: 6,
+        cursorCreatedAt: suggestedCursor.cursorCreatedAt,
+        cursorId: suggestedCursor.cursorId,
+      });
+      if (res.ok) {
+        const filtered = res.items.filter((item) => item.id !== videoId);
+        setSuggestedVideos((prev) => [...prev, ...filtered]);
+        setSuggestedCursor(res.nextCursor);
+      }
+    } catch {
+      // Silently fail
+    } finally {
+      setLoadingSuggested(false);
+    }
+  }, [suggestedCursor, loadingSuggested, videoId]);
+
+  const onSuggestedClick = useCallback(
+    (id: string) => {
+      if (haptics.impactOccurred.isAvailable()) haptics.impactOccurred("medium");
+      nav(`/video/${id}`);
+    },
+    [haptics, nav],
+  );
+
   if (loading) {
     return (
       <div style={{ display: "flex", justifyContent: "center", padding: 24 }}>
@@ -221,25 +281,69 @@ export function PlayerPage({ haptics }: Props) {
   }
 
   return (
-    <div style={{ height: "100%" }}>
-      <video
-        ref={(el) => {
-          videoEl.current = el;
-        }}
-        className="gs-player"
-        controls
-        playsInline
-        preload="metadata"
-        src={data.videoUrl}
-        onPlay={() => {
-          if (haptics.selectionChanged.isAvailable()) haptics.selectionChanged();
-        }}
-        onError={handleVideoError}
-      />
-
-      <div className="gs-page">
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>{data.title}</div>
+    <div className="gs-player-page">
+      <div className="gs-video-container">
+        <video
+          ref={(el) => {
+            videoEl.current = el;
+          }}
+          className="gs-player"
+          controls
+          playsInline
+          preload="metadata"
+          src={data.videoUrl}
+          onPlay={() => {
+            if (haptics.selectionChanged.isAvailable()) haptics.selectionChanged();
+          }}
+          onError={handleVideoError}
+        />
       </div>
+
+      <Section header={<Title level="3" weight="2">{data.title}</Title>}>
+        {loadingSuggested && suggestedVideos.length === 0 ? (
+          <div style={{ display: "flex", justifyContent: "center", padding: 24 }}>
+            <Spinner size="m" />
+          </div>
+        ) : suggestedVideos.length > 0 ? (
+          <>
+            {suggestedVideos.map((video) => (
+              <Cell
+                key={video.id}
+                onClick={() => onSuggestedClick(video.id)}
+                before={
+                  <div className="gs-suggested-thumb-container">
+                    <img
+                      alt=""
+                      src={video.thumbUrl}
+                      className="gs-suggested-thumb"
+                    />
+                    <span className="gs-video-duration">{formatDuration(video.durationSeconds)}</span>
+                  </div>
+                }
+              >
+                {video.title}
+              </Cell>
+            ))}
+            {suggestedCursor && (
+              <div style={{ padding: "12px 16px" }}>
+                <Button
+                  stretched
+                  mode="outline"
+                  loading={loadingSuggested}
+                  onClick={() => {
+                    if (haptics.selectionChanged.isAvailable()) haptics.selectionChanged();
+                    void loadMoreSuggested();
+                  }}
+                >
+                  Load more videos
+                </Button>
+              </div>
+            )}
+          </>
+        ) : (
+          <Placeholder description="No other videos available" />
+        )}
+      </Section>
     </div>
   );
 }
